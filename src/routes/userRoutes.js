@@ -21,9 +21,6 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage });
 
-/**
- * STEP 1 - Create User (Tab 1: user_id, phone_number, email)
- */
 router.post("/", async (req, res) => {
   try {
     const { user_id, phone_number, email } = req.body;
@@ -32,37 +29,40 @@ router.post("/", async (req, res) => {
       return res.status(400).json({ message: "⚠️ user_id, phone_number and email are required" });
     }
 
-    const sql = `INSERT INTO users (id, phone_number, email) VALUES (?, ?, ?)`;
+    const sql = `INSERT INTO users (user_id, phone_number, email) VALUES (?, ?, ?)`;
     await db.query(sql, [user_id, phone_number, email]);
-
-    res.status(201).json({ message: "✅ step1 :Approve successfully" });
+    res.status(201).json({
+      message: "✅ step1 :Approve successfully",
+      result: { user_id, phone_number, email }
+    });
   } catch (err) {
     res.status(500).json({ message: "❌ Approve failed", error: err.message });
   }
 });
 
-router.post("/:id/profile", upload.single("profile_img"), async (req, res) => {
+
+router.post("/profile/:user_id", upload.single("profile_img"), async (req, res) => {
   try {
-    const userId = req.params.id;
+    const userId = req.params.user_id;
     const profile_img = req.file ? req.file.filename : null;
 
     if (!profile_img) {
       return res.status(400).json({ message: "⚠️ Profile image is required" });
     }
 
-    const sql = `UPDATE users SET profile_img = ? WHERE id = ?`;
+    const sql = `UPDATE users SET profile_img = ? WHERE user_id = ?`;
     await db.query(sql, [profile_img, userId]);
 
-    res.status(200).json({ message: "✅ Step2 complete: Profile image uploaded" });
+
+    res.status(200).json({ message: "✅ Step2 complete: Profile image uploaded", result: { user_id: userId, profile_img } });
   } catch (err) {
     res.status(500).json({ message: "❌ Error in Step2", error: err.message });
   }
 });
 
-router.post("/:id/details", async (req, res) => {
+router.post("/details/:user_id", async (req, res) => {
   try {
-    const userId = req.params.id;
-
+    const { user_id } = req.params;
     const {
       aadhar_no,
       employer_name,
@@ -73,44 +73,118 @@ router.post("/:id/details", async (req, res) => {
       nominee_phone_no,
     } = req.body;
 
+    // Validate required fields
+    if (!aadhar_no || !pan_card_number || !bank_account_no) {
+      return res.status(400).json({
+        message: "⚠️ Missing required fields (aadhar_no, pan_card_number, bank_account_no)",
+      });
+    }
+
     const sql = `
-      UPDATE users SET 
-        aadhar_no = ?, employer_name = ?, pan_card_number = ?, 
-        ifsc_code = ?, bank_account_no = ?, nominee_name = ?, nominee_phone_no = ?, 
-        aadhar_front_img = ?, aadhar_back_img = ?, pan_front_img = ?
-      WHERE id = ?
+      UPDATE users 
+      SET 
+        aadhar_no = ?, 
+        employer_name = ?, 
+        pan_card_number = ?, 
+        ifsc_code = ?, 
+        bank_account_no = ?, 
+        nominee_name = ?, 
+        nominee_phone_no = ?,
+        updated_at = NOW()
+      WHERE user_id = ?
     `;
 
-    await db.query(sql, [
-      aadhar_no, employer_name, pan_card_number,
-      ifsc_code, bank_account_no, nominee_name, nominee_phone_no,
-      userId
+    const [result] = await db.query(sql, [
+      aadhar_no,
+      employer_name,
+      pan_card_number,
+      ifsc_code,
+      bank_account_no,
+      nominee_name,
+      nominee_phone_no,
+      user_id,
     ]);
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ message: "User not found or no change made." });
+    }
 
-    res.status(200).json({ message: "✅ Step3 complete: Details updated" });
+    res.status(200).json({
+      message: "✅ Step3 complete: Details updated", result: {
+        user_id,
+        aadhar_no,
+        employer_name,
+        pan_card_number,
+        ifsc_code,
+        bank_account_no,
+        nominee_name,
+        nominee_phone_no,
+      },
+    });
   } catch (err) {
+    console.error("SQL Error in Step3:", err);
     res.status(500).json({ message: "❌ Error in Step3", error: err.message });
   }
 });
 
-router.post(
-  "/:id/upload-docs",
-  upload.fields([
-    { name: "aadhar_front_img", maxCount: 1 },
-    { name: "aadhar_back_img", maxCount: 1 },
-    { name: "pan_front_img", maxCount: 1 },
-  ]),
-  (req, res) => {
+
+router.post("/upload-docs/:user_id", upload.fields([
+  { name: "aadhar_front_img", maxCount: 1 },
+  { name: "aadhar_back_img", maxCount: 1 },
+  { name: "pan_front_img", maxCount: 1 },
+]),
+  async (req, res) => {
     try {
-      res.json({
-        message: "Documents uploaded successfully",
-        files: req.files
+      const { user_id } = req.params;
+      const aadhar_front_img = req.files["aadhar_front_img"]
+        ? req.files["aadhar_front_img"][0].filename
+        : null;
+      const aadhar_back_img = req.files["aadhar_back_img"]
+        ? req.files["aadhar_back_img"][0].filename
+        : null;
+      const pan_front_img = req.files["pan_front_img"]
+        ? req.files["pan_front_img"][0].filename
+        : null;
+
+      if (!aadhar_front_img && !aadhar_back_img && !pan_front_img) {
+        return res.status(400).json({ message: "⚠️ No documents uploaded" });
+      }
+
+      const sql = `
+        UPDATE users 
+        SET 
+          aadhar_front_img = ?, 
+          aadhar_back_img = ?, 
+          pan_front_img = ?,
+          updated_at = NOW()
+        WHERE user_id = ?
+      `;
+
+      const [result] = await db.query(sql, [
+        aadhar_front_img,
+        aadhar_back_img,
+        pan_front_img,
+        user_id,
+      ]);
+
+      if (result.affectedRows === 0) {
+        return res.status(404).json({ message: `❌ No user found with ID: ${user_id}` });
+      }
+
+      res.status(200).json({
+        message: "✅ Step4 complete: Documents uploaded & saved",
+        files: {
+          aadhar_front_img,
+          aadhar_back_img,
+          pan_front_img,
+        },
       });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      console.error("SQL Error in Step4:", err);
+      res.status(500).json({ message: "❌ Error in Step4", error: err.message });
     }
   }
 );
+
 router.get("/", async (req, res) => {
   try {
     const [rows] = await db.query("SELECT * FROM users");
