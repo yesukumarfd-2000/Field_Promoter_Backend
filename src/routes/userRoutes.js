@@ -36,7 +36,7 @@ router.post("/", async (req, res) => {
       result: { user_id, phone_number, email }
     });
   } catch (err) {
-    res.status(500).json({ message: "❌ Approve failed", error: err.message });
+    res.status(500).json({ message: "❌  Error in Step1", error: err.message });
   }
 });
 
@@ -167,7 +167,7 @@ router.post("/upload-docs/:user_id", upload.fields([
       ]);
 
       if (result.affectedRows === 0) {
-        return res.status(404).json({ message: `❌ No user found with ID: ${user_id}` });
+        return res.status(404).json({ message: `❌ No user found with user_ID: ${user_id}` });
       }
 
       res.status(200).json({
@@ -202,5 +202,30 @@ router.get("/", async (req, res) => {
     res.status(500).json({ message: "❌ Error fetching users", error: err.message });
   }
 });
+
+router.get("/:user_id", async (req, res) => {
+  try {
+    const { user_id } = req.params;
+
+    const [rows] = await db.query("SELECT * FROM users WHERE user_id = ?", [user_id]);
+
+    if (rows.length === 0) {
+      return res.status(404).json({ message: "⚠️ User not found" });
+    }
+
+    const user = {
+      ...rows[0],
+      profile_img: rows[0].profile_img ? `${req.protocol}://${req.get("host")}/uploads/${rows[0].profile_img}` : null,
+      aadhar_front_img: rows[0].aadhar_front_img ? `${req.protocol}://${req.get("host")}/uploads/${rows[0].aadhar_front_img}` : null,
+      aadhar_back_img: rows[0].aadhar_back_img ? `${req.protocol}://${req.get("host")}/uploads/${rows[0].aadhar_back_img}` : null,
+      pan_front_img: rows[0].pan_front_img ? `${req.protocol}://${req.get("host")}/uploads/${rows[0].pan_front_img}` : null,
+    };
+
+    res.json(user);
+  } catch (err) {
+    res.status(500).json({ message: "❌ Error fetching user", error: err.message });
+  }
+});
+
 
 module.exports = router;
