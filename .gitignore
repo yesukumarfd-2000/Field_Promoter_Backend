@@ -1,6 +1,6 @@
 node_modules/
 # Ignore all files inside uploads/
-uploads/*
+# uploads/*
 
 # But keep the folder
 !uploads/.gitkeep
