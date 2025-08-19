@@ -3,6 +3,7 @@ const multer = require("multer");
 const path = require("path");
 const fs = require("fs");
 const db = require("../config/db");
+const jwt = require("jsonwebtoken");
 
 const router = express.Router();
 
@@ -20,7 +21,52 @@ const storage = multer.diskStorage({
   },
 });
 const upload = multer({ storage });
+// --- Routes Here ---
+// Admin creates user 
+router.post("/admin", async (req, res) => {
+  try {
+    const { user_id, phone_number, email } = req.body;
 
+    if (!user_id || !phone_number || !email) {
+      return res.status(400).json({
+        message: "⚠️ user_id, phone_number and email are required",
+        status: "failed",
+        status_code: 400,
+      });
+    }
+
+    // Check if user already exists
+    const [rows] = await db.query("SELECT user_id FROM users WHERE user_id = ?", [user_id]);
+    if (rows.length > 0) {
+      return res.status(409).json({
+        message: `⚠️ Step1: User with user_id ${user_id} already exists`,
+        status: "duplicate",
+        status_code: 409,
+      });
+    }
+     const status = "verify-pending";
+    const status_code = 0;
+      const sql = `
+      INSERT INTO users 
+      (user_id, phone_number, email, status, status_code, created_at) 
+      VALUES (?, ?, ?, ?, ?, NOW())
+    `;
+    await db.query(sql, [user_id, phone_number, email, status, status_code]);
+
+    res.status(201).json({
+      message: "✅ Step0: Admin created the user successfully",
+      status,
+      status_code,
+      result: { user_id, phone_number, email, status, status_code },
+    });
+  } catch (err) {
+    res.status(500).json({
+      message: "❌ Step1: Failed to create admin user",
+      error: err.message,
+    });
+  }
+});
+// User verified here
 router.post("/", async (req, res) => {
   try {
     const { user_id, phone_number, email } = req.body;
@@ -29,17 +75,27 @@ router.post("/", async (req, res) => {
       return res.status(400).json({ message: "⚠️ user_id, phone_number and email are required" });
     }
 
-    const sql = `INSERT INTO users (user_id, phone_number, email) VALUES (?, ?, ?)`;
-    await db.query(sql, [user_id, phone_number, email]);
-    res.status(201).json({
-      message: "✅ step1 :Approve successfully",
-      result: { user_id, phone_number, email }
+    const sql = `
+      UPDATE users 
+      SET phone_number = ?, email = ?, status = 'profile-img-pending', status_code = 1, approved_at = NOW() 
+      WHERE user_id = ?
+    `;
+    const [result] = await db.query(sql, [phone_number, email, user_id]);
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ message: `❌ Step2: No user found with user_id ${user_id}` });
+    }
+
+    res.status(200).json({
+      message: "✅ Step1: User verified successfully (status = profile-img-pending, code=1)",
+      status: "profile-img-pending",
+      status_code: 1,
+      result: { user_id, phone_number, email, status: "profile-img-pending", status_code: 1 },
     });
   } catch (err) {
-    res.status(500).json({ message: "❌  Error in Step1", error: err.message });
+    res.status(500).json({ message: "❌ Step2: Failed to verify user", error: err.message });
   }
 });
-
 
 router.post("/profile/:user_id", upload.single("profile_img"), async (req, res) => {
   try {
@@ -50,13 +106,23 @@ router.post("/profile/:user_id", upload.single("profile_img"), async (req, res) 
       return res.status(400).json({ message: "⚠️ Profile image is required" });
     }
 
-    const sql = `UPDATE users SET profile_img = ? WHERE user_id = ?`;
-    await db.query(sql, [profile_img, userId]);
+    const sql = `UPDATE users 
+                 SET profile_img = ?, status = 'details-pending', status_code = 2, updated_at = NOW() 
+                 WHERE user_id = ?`;
+    const [result] = await db.query(sql, [profile_img, userId]);
 
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ message: `❌ Step3: No user found with user_id ${userId}` });
+    }
 
-    res.status(200).json({ message: "✅ Step2 complete: Profile image uploaded", result: { user_id: userId, profile_img } });
+    res.status(200).json({
+      message: "✅ Step2: Profile image uploaded successfully (status = details-pending, code=2)",
+      status: "details-pending",
+      status_code: 2,
+      result: { user_id: userId, profile_img, status: "details-pending", status_code: 2 },
+    });
   } catch (err) {
-    res.status(500).json({ message: "❌ Error in Step2", error: err.message });
+    res.status(500).json({ message: "❌ Step3: Failed to upload profile image", error: err.message });
   }
 });
 
@@ -73,10 +139,9 @@ router.post("/details/:user_id", async (req, res) => {
       nominee_phone_no,
     } = req.body;
 
-    // Validate required fields
-    if (!aadhar_no || !pan_card_number || !bank_account_no) {
+    if (!aadhar_no || !pan_card_number || !bank_account_no || !nominee_name || !nominee_phone_no) {
       return res.status(400).json({
-        message: "⚠️ Missing required fields (aadhar_no, pan_card_number, bank_account_no)",
+        message: "⚠️ Missing required fields (aadhar_no, pan_card_number, bank_account_no, nominee_name, nominee_phone_no)",
       });
     }
 
@@ -90,6 +155,8 @@ router.post("/details/:user_id", async (req, res) => {
         bank_account_no = ?, 
         nominee_name = ?, 
         nominee_phone_no = ?,
+        status = 'uploads-docs-pending',
+        status_code = 3,
         updated_at = NOW()
       WHERE user_id = ?
     `;
@@ -104,49 +171,36 @@ router.post("/details/:user_id", async (req, res) => {
       nominee_phone_no,
       user_id,
     ]);
+
     if (result.affectedRows === 0) {
-      return res.status(404).json({ message: "User not found or no change made." });
+      return res.status(404).json({ message: `❌ Step4: No user found with user_id ${user_id}` });
     }
 
     res.status(200).json({
-      message: "✅ Step3 complete: Details updated", result: {
-        user_id,
-        aadhar_no,
-        employer_name,
-        pan_card_number,
-        ifsc_code,
-        bank_account_no,
-        nominee_name,
-        nominee_phone_no,
-      },
+      message: "✅ Step3: User details updated successfully",
+      status: "uploads-docs-pending",
+      status_code: 3,
+      result: { user_id, aadhar_no, pan_card_number, bank_account_no, status: "uploads-docs-pending", status_code: 3 },
     });
   } catch (err) {
-    console.error("SQL Error in Step3:", err);
-    res.status(500).json({ message: "❌ Error in Step3", error: err.message });
+    res.status(500).json({ message: "❌ Step4: Failed to update user details", error: err.message });
   }
 });
 
-
-router.post("/upload-docs/:user_id", upload.fields([
-  { name: "aadhar_front_img", maxCount: 1 },
-  { name: "aadhar_back_img", maxCount: 1 },
-  { name: "pan_front_img", maxCount: 1 },
-]),
+router.post("/upload-docs/:user_id",upload.fields([
+    { name: "aadhar_front_img", maxCount: 1 },
+    { name: "aadhar_back_img", maxCount: 1 },
+    { name: "pan_front_img", maxCount: 1 },
+  ]),
   async (req, res) => {
     try {
       const { user_id } = req.params;
-      const aadhar_front_img = req.files["aadhar_front_img"]
-        ? req.files["aadhar_front_img"][0].filename
-        : null;
-      const aadhar_back_img = req.files["aadhar_back_img"]
-        ? req.files["aadhar_back_img"][0].filename
-        : null;
-      const pan_front_img = req.files["pan_front_img"]
-        ? req.files["pan_front_img"][0].filename
-        : null;
+      const aadhar_front_img = req.files["aadhar_front_img"] ? req.files["aadhar_front_img"][0].filename : null;
+      const aadhar_back_img = req.files["aadhar_back_img"] ? req.files["aadhar_back_img"][0].filename : null;
+      const pan_front_img = req.files["pan_front_img"] ? req.files["pan_front_img"][0].filename : null;
 
       if (!aadhar_front_img && !aadhar_back_img && !pan_front_img) {
-        return res.status(400).json({ message: "⚠️ No documents uploaded" });
+        return res.status(400).json({ message: "⚠️ Missing documents uploaded" });
       }
 
       const sql = `
@@ -155,6 +209,8 @@ router.post("/upload-docs/:user_id", upload.fields([
           aadhar_front_img = ?, 
           aadhar_back_img = ?, 
           pan_front_img = ?,
+          status = 'approve-pending',
+          status_code = 4,
           updated_at = NOW()
         WHERE user_id = ?
       `;
@@ -167,23 +223,70 @@ router.post("/upload-docs/:user_id", upload.fields([
       ]);
 
       if (result.affectedRows === 0) {
-        return res.status(404).json({ message: `❌ No user found with user_ID: ${user_id}` });
+        return res.status(404).json({ message: `❌ Step5: No user found with user_id ${user_id}` });
       }
 
       res.status(200).json({
-        message: "✅ Step4 complete: Documents uploaded & saved",
-        files: {
-          aadhar_front_img,
-          aadhar_back_img,
-          pan_front_img,
-        },
+        message: "✅ Step4: Documents uploaded successfully",
+        status: "approve-pending",
+        status_code: 4,
+        files: { aadhar_front_img, aadhar_back_img, pan_front_img },
       });
     } catch (err) {
-      console.error("SQL Error in Step4:", err);
-      res.status(500).json({ message: "❌ Error in Step4", error: err.message });
+      res.status(500).json({ message: "❌ Step4: Failed to upload documents", error: err.message });
     }
   }
 );
+
+// Admin Approve Here status Set 
+const JWT_SECRET = process.env.JWT_SECRET || "your_jwt_secret_key"; // Use env var in production
+
+router.post("/admin/approve/:user_id", async (req, res) => {
+  try {
+    const { user_id } = req.params;
+
+    // First check if user exists
+    const [users] = await db.query(
+      "SELECT user_id, email, phone_number, status FROM users WHERE user_id = ?",
+      [user_id]
+    );
+
+    if (users.length === 0) {
+      return res.status(404).json({ message: `❌ Step6: No user found with user_id ${user_id}` });
+    }
+    const user = users[0];
+    // Generate JWT token
+    const token = jwt.sign(
+      {
+        user_id: user.user_id,
+        email: user.email,
+        phone_number: user.phone_number,
+        status: "active", 
+      },
+      JWT_SECRET,
+      { expiresIn: "7d" }
+    );
+
+    const sql = `UPDATE users 
+                 SET status = 'active', status_code = 5, approved_at = NOW(), token = ? 
+                 WHERE user_id = ?`;
+    const [result] = await db.query(sql, [token, user_id]);
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ message: `❌ Step6: No user found with user_id ${user_id}` });
+    }
+
+    res.status(200).json({
+      message: "✅ Step5: User approved successfully",
+      status: "active",
+      status_code: 5,
+      result: { user_id, status: "active", status_code: 5, token },
+    });
+  } catch (err) {
+    res.status(500).json({ message: "❌ Step5: Failed to approve user", error: err.message });
+  }
+});
+
 
 router.get("/", async (req, res) => {
   try {
@@ -197,20 +300,19 @@ router.get("/", async (req, res) => {
       pan_front_img: user.pan_front_img ? `${req.protocol}://${req.get("host")}/uploads/${user.pan_front_img}` : null,
     }));
 
-    res.json(users);
+    res.json({ message: "✅ Users fetched successfully", users });
   } catch (err) {
-    res.status(500).json({ message: "❌ Error fetching users", error: err.message });
+    res.status(500).json({ message: "❌ Failed to fetch users", error: err.message });
   }
 });
 
 router.get("/:user_id", async (req, res) => {
   try {
     const { user_id } = req.params;
-
     const [rows] = await db.query("SELECT * FROM users WHERE user_id = ?", [user_id]);
 
     if (rows.length === 0) {
-      return res.status(404).json({ message: "⚠️ User not found" });
+      return res.status(404).json({ message: `❌ No user found with user_id ${user_id}` });
     }
 
     const user = {
@@ -221,11 +323,10 @@ router.get("/:user_id", async (req, res) => {
       pan_front_img: rows[0].pan_front_img ? `${req.protocol}://${req.get("host")}/uploads/${rows[0].pan_front_img}` : null,
     };
 
-    res.json(user);
+    res.json({ message: "✅ User fetched successfully", user });
   } catch (err) {
-    res.status(500).json({ message: "❌ Error fetching user", error: err.message });
+    res.status(500).json({ message: "❌ Failed to fetch user", error: err.message });
   }
 });
-
 
 module.exports = router;
